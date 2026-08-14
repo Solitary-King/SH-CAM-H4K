@@ -15,7 +15,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 # রেন্ডারের এনভায়রনমেন্ট ভেরিয়েবল থেকে সিক্রেট ডেটা লোড করা
-TOKEN = os.environ.get("TOKEN", "YOUR_BOT_TOKEN_HERE")
+TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MY_USERNAME = os.environ.get("MY_USERNAME")
 
@@ -28,8 +28,8 @@ user_states = {}
 app_telegram = None  
 bot_loop = None
 
-# --- ফ্লাস্ক সার্ভার ---
-flask_app = Flask(__name__)
+# --- ফ্লাস্ক সার্ভার (template_folder সঠিকভাবে সেট করা হলো যাতে 500 Internal Error না আসে) ---
+flask_app = Flask(__name__, template_folder='templates')
 
 @flask_app.route('/')
 def index():
@@ -110,7 +110,9 @@ def admin_panel_keyboard():
         [InlineKeyboardButton("💰 User Coin (+/-)", callback_data="adm_user_coin")],
         [InlineKeyboardButton("👑 Make VIP", callback_data="adm_make_vip"),
          InlineKeyboardButton("👤 Make Normal", callback_data="adm_make_normal")],
-        [InlineKeyboardButton("➕ Add Channel", callback_data="adm_add_chan")]
+        [InlineKeyboardButton("➕ Add Channel", callback_data="adm_add_chan"),
+         InlineKeyboardButton("➖ Remove Channel", callback_data="adm_rem_chan")],
+        [InlineKeyboardButton("📋 Channel List", callback_data="adm_list_chan")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -220,8 +222,21 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         elif state == "waiting_add_channel":
             user_states[user_id] = None
-            forced_channels.append(text.strip())
-            await update.message.reply_text(f"✅ চ্যানেল যুক্ত হয়েছে: {text.strip()}", reply_markup=main_reply_keyboard(is_admin))
+            chan_name = text.strip()
+            if chan_name not in forced_channels:
+                forced_channels.append(chan_name)
+                await update.message.reply_text(f"✅ চ্যানেল যুক্ত হয়েছে: {chan_name}", reply_markup=main_reply_keyboard(is_admin))
+            else:
+                await update.message.reply_text(f"⚠️ চ্যানেলটি আগেই লিস্টে আছে!", reply_markup=main_reply_keyboard(is_admin))
+            return
+        elif state == "waiting_rem_channel":
+            user_states[user_id] = None
+            chan_name = text.strip()
+            if chan_name in forced_channels:
+                forced_channels.remove(chan_name)
+                await update.message.reply_text(f"✅ চ্যানেল রিমুভ করা হয়েছে: {chan_name}", reply_markup=main_reply_keyboard(is_admin))
+            else:
+                await update.message.reply_text(f"❌ এই নামের কোনো চ্যানেল লিস্টে পাওয়া যায়নি!", reply_markup=main_reply_keyboard(is_admin))
             return
         elif state == "waiting_user_coin":
             user_states[user_id] = None
@@ -267,7 +282,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
 
-        # রেন্ডার থেকে স্বয়ংক্রিয়ভাবে এক্সটার্নাল ইউআরএল ধরে নেওয়া
         base_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5000")
         target_link = f"{base_url}/?id={user_id}"
         
@@ -281,7 +295,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif text == "🎁 Refer":
         ref_link = f"https://t.me/{context.bot.username}?start=ref_{user_id}"
-        await update.message.reply_text(f"🎁 প্রতি রেফারে পাবেন ගන්න **{REFER_REWARD} Coins**!\n\n🔗 **Your Link:**\n`{ref_link}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🎁 প্রতি রেফারে পাবেন **{REFER_REWARD} Coins**!\n\n🔗 **Your Link:**\n`{ref_link}`", parse_mode="Markdown")
 
     elif text == "ℹ️ Help / Info":
         help_text = "ℹ️ **Help & Support**\n\nবট ব্যবহারে কোনো সমস্যা হলে বা কয়েন নিতে এডমিনের সাথে যোগাযোগ করুন:"
@@ -313,7 +327,16 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.message.reply_text("👤 Normal করার জন্য ইউজারের আইডি দিন:")
     elif data == "adm_add_chan":
         user_states[ADMIN_ID] = "waiting_add_channel"
-        await query.message.reply_text("➕ চ্যানেলের ইউজারনেম দিন (যেমন `@channel`):")
+        await query.message.reply_text("➕ যুক্ত করার জন্য চ্যানেলের ইউজারনেম দিন (যেমন `@channel`):")
+    elif data == "adm_rem_chan":
+        user_states[ADMIN_ID] = "waiting_rem_channel"
+        await query.message.reply_text("➖ রিমুভ করার জন্য চ্যানেলের ইউজারনেম দিন (যেমন `@channel`):")
+    elif data == "adm_list_chan":
+        if forced_channels:
+            chan_list_str = "\n".join([f"• {c}" for c in forced_channels])
+            await query.message.reply_text(f"📋 **ফোর্স সাবস্ক্রিপশন চ্যানেলসমূহ:**\n\n{chan_list_str}", parse_mode="Markdown")
+        else:
+            await query.message.reply_text("📋 বর্তমানে কোনো ফোর্স চ্যানেল যুক্ত করা নেই।")
 
 def main():
     global app_telegram, bot_loop
