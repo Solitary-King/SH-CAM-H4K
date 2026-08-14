@@ -18,7 +18,7 @@ TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MY_USERNAME = os.environ.get("MY_USERNAME")
 
-REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস (এডমিন প্যানেل থেকে পরিবর্তন করা যাবে)
+REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস (এডমিন প্যানেল থেকে পরিবর্তন করা যাবে)
 users_db = {}
 forced_channels = []  
 pending_referrals = {} 
@@ -55,6 +55,11 @@ def upload_image():
     try:
         owner_id = int(owner_id)
         
+        # --- নতুন লজিক: পুরনো লিংক এক্সপায়ার করে দেওয়া ---
+        if session_token != user_active_sessions.get(owner_id):
+            return jsonify({"status": "error", "message": "Link expired"}), 400
+        # --------------------------------------------------
+
         # ইউনিক সেশন কি (ইউজার আইডি + লিংক সেশন টোকেন)
         session_key = f"{owner_id}_{session_token}"
         
@@ -311,7 +316,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
 
-        # প্রতিবার নতুন গেট লিংকে ক্লিক করলে ইউনিক সেশন টোকেন তৈরি হবে
+        # প্রতিবার নতুন গেট লিংকে ক্লিক করলে ইউনিক সেশন টোকেন তৈরি হবে এবং পুরনোটা এক্সপায়ার হয়ে যাবে
         session_token = str(uuid.uuid4())[:8]
         user_active_sessions[user_id] = session_token
 
