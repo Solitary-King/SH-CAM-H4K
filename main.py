@@ -294,7 +294,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
     if text == "🔗 Get Link":
-        user_data = users_db.get(user_id, {"balance": 10, "is_vip": False})
+        user_data = users_db.get(user_id, {"balance": 3, "is_vip": False})
         if not user_data["is_vip"] and user_data["balance"] < 1:
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
