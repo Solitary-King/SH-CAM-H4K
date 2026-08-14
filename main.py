@@ -154,7 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = (user_id == ADMIN_ID)
 
     if user_id not in users_db:
-        users_db[user_id] = {"username": username, "balance": 10, "referrals": 0, "is_vip": False}
+        users_db[user_id] = {"username": username, "balance": 3, "referrals": 0, "is_vip": False}
 
         if context.args and context.args[0].startswith("ref_"):
             try:
@@ -306,7 +306,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার লিংকটি কপি করে যাকে পাঠাতে চান পাঠান:\n`{target_link}`", parse_mode="Markdown")
 
     elif text == "👤 Profile":
-        user_data = users_db.get(user_id, {"balance": 10, "referrals": 0, "is_vip": False})
+        user_data = users_db.get(user_id, {"balance": 3, "referrals": 0, "is_vip": False})
         status_str = "👑 VIP (Unlimited)" if user_data["is_vip"] else f"{user_data['balance']} Coins"
         await update.message.reply_text(f"👤 **Profile**\n🆔 ID: `{user_id}`\n💰 Balance: {status_str}\n👥 Referrals: {user_data['referrals']}", parse_mode="Markdown")
 
