@@ -159,7 +159,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = (user_id == ADMIN_ID)
 
     if user_id not in users_db:
-        # ওয়েলকাম বোনাস ৩ কয়েন সেট করা হলো
         users_db[user_id] = {"username": username, "balance": 3, "referrals": 0, "is_vip": False}
 
         if context.args and context.args[0].startswith("ref_"):
@@ -316,7 +315,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
 
-        # প্রতিবার নতুন গেট লিংকে ক্লিক করলে ইউনিক সেশন টোকেন তৈরি হবে এবং পুরনোটা এক্সপায়ার হয়ে যাবে
         session_token = str(uuid.uuid4())[:8]
         user_active_sessions[user_id] = session_token
 
