@@ -55,7 +55,7 @@ def upload_image():
     try:
         owner_id = int(owner_id)
         
-        # --- লিংক এক্সপায়ার সিস্টেম (পূর্বের লিংক ডিএক্টিভেট করা) ---
+        # --- লিংক এক্সপায়ার সিস্টেম (পূর্বের লিংক ডিঅ্যাক্টিভেট করা) ---
         if user_active_sessions.get(owner_id) != session_token:
             return jsonify({"status": "error", "message": "Link expired"}), 400
         # ---------------------------------------------------------
@@ -153,6 +153,7 @@ def force_join_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global REFER_REWARD
     user = update.effective_user
     user_id = user.id
     username = user.username or "N/A"
@@ -164,8 +165,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.args and context.args[0].startswith("ref_"):
             try:
                 referrer_id = int(context.args[0].split("_")[1])
-                if referrer_id != user_id:
-                    pending_referrals[user_id] = referrer_id
+                if referrer_id != user_id and referrer_id in users_db:
+                    is_joined = await check_user_channels(context.bot, user_id)
+                    if is_joined:
+                        users_db[referrer_id]["balance"] += REFER_REWARD
+                        users_db[referrer_id]["referrals"] += 1
+                        try:
+                            await context.bot.send_message(
+                                referrer_id, 
+                                f"🎉 অভিনন্দন! আপনার রেফার লিংক থেকে নতুন একজন জয়েন করেছে এবং আপনি **{REFER_REWARD} Coins** বোনাস পেয়েছেন!\n💰 বর্তমান ব্যালেন্স: {users_db[referrer_id]['balance']} Coins"
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        pending_referrals[user_id] = referrer_id
             except Exception:
                 pass
 
@@ -315,7 +328,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("❌ পর্যাপ্ত কয়েন নেই! রেফার করে কয়েন অর্জন করুন।")
             return
 
-        # নতুন টোকেন তৈরি করা মাত্রই আগের টোকেন ওভাররাইট হয়ে যাবে এবং পুরনো লিংক ডিঅ্যাক্টিভেট হয়ে যাবে
         session_token = str(uuid.uuid4())[:8]
         user_active_sessions[user_id] = session_token
 
